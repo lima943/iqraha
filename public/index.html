@@ -21,36 +21,47 @@ function vocalizationScore(target,heard){const t=harakatPattern(target),h=haraka
 function sim(a,b){a=norm(a);b=norm(b);if(a===b)return 1;if(!a||!b)return 0;let A=[...a],B=[...b],d=Array(A.length+1).fill(0).map(()=>Array(B.length+1).fill(0));for(let i=0;i<=A.length;i++)d[i][0]=i;for(let j=0;j<=B.length;j++)d[0][j]=j;for(let i=1;i<=A.length;i++)for(let j=1;j<=B.length;j++)d[i][j]=Math.min(d[i-1][j]+1,d[i][j-1]+1,d[i-1][j-1]+(A[i-1]===B[j-1]?0:1));return 1-d[A.length][B.length]/Math.max(A.length,B.length)}
 function listen(){
  let SR=window.SpeechRecognition||window.webkitSpeechRecognition;
- if(!SR)return $("feed").innerHTML='<div class="feed bad">المتصفح لا يدعم التعرف على الصوت. استخدم Chrome أو Edge.</div>';
+ if(!SR)return $("feed").innerHTML='<div class="feed bad">المتصفح لا يدعم التعرف على الصوت. استخدم Google Chrome أو Microsoft Edge واسمح بالميكروفون.</div>';
  let item=(levels.find(x=>x.id===student.level)||{}).items?.[student.item]||{};
  let reference=itemText(item), mode=itemExercise(item);
- rec=new SR();rec.lang="ar-SA";rec.interimResults=false;rec.maxAlternatives=5;
- $("mic").classList.add("on");$("prompt").textContent="أستمع إليك…";
+ rec=new SR();
+ // Chrome uses its speech recognition service when available. Arabic Saudi is suitable for Arabic learning.
+ rec.lang="ar-SA"; rec.interimResults=false; rec.continuous=false; rec.maxAlternatives=10;
+ $("mic").classList.add("on"); $("prompt").textContent="أستمع إليك…";
  rec.onresult=async e=>{
-   let hs=[...e.results[0]].map(x=>x.transcript),targetRaw=reference;
-   target=norm(targetRaw);
-   let score=Math.max(...hs.map(x=>sim(x,target)));
-   let vs=hasHarakat(targetRaw)?Math.max(...hs.map(x=>vocalizationScore(targetRaw,x)||0)):1;
-   let vowelHint=mode==="fatha"?"فتحة":mode==="damma"?"ضمة":mode==="kasra"?"كسرة":mode==="sukun"?"سكون":mode==="shadda"?"شدة":"التشكيل";
-   let strict=mode!=="full";
-   // Browser speech recognition usually removes Arabic short-vowel marks; this path is only a fallback.
-   let ok=score>=.88 && (vs===1 || (!strict && vs>=.84));
+   let hs=[...e.results[0]].map(x=>x.transcript).filter(Boolean), targetRaw=reference, target=norm(targetRaw);
+   let scores=hs.map(x=>sim(x,target));
+   let score=Math.max(...scores,0);
+   // The browser frequently returns Arabic without harakat. Do not reject a correct
+   // lexical match merely because the recognition service omitted the written marks.
+   // If the service DOES return harakat, use them as an additional signal.
+   let withMarks=hs.filter(x=>hasHarakat(x));
+   let vs=withMarks.length?Math.max(...withMarks.map(x=>vocalizationScore(targetRaw,x)||0)):null;
+   let vowelHint=mode==="fatha"?"الفتحة َ":mode==="damma"?"الضمة ُ":mode==="kasra"?"الكسرة ِ":mode==="sukun"?"السكون ْ":mode==="shadda"?"الشدة ّ":"التشكيل المكتوب";
+   // Flexible thresholds: accept close Arabic recognition results, while requiring
+   // a stronger match for very short items where one character matters.
+   let compact=target.replace(/\s/g,"");
+   let threshold=compact.length<=2?0.82:compact.length<=4?0.76:0.70;
+   let ok=score>=threshold;
+   if(vs!==null && hasHarakat(targetRaw)) ok=ok && vs>=0.70;
    $("prompt").textContent="سمعت: «"+hs[0]+"»";
    try{
     let old={level:student.level,item:student.item};
     await api("/api/student/result",{method:"POST",body:JSON.stringify({level:student.level,item:student.item,target,heard:hs[0],score,correct:ok,exercise:mode})});
     if(ok){
-      $("feed").innerHTML='<div class="feed ok">✅ أحسنت! القراءة صحيحة.</div>';
+      $("feed").innerHTML='<div class="feed ok">✅ أحسنت! قراءتك مقبولة. أكمل بنفس الحركة والتشكيل الظاهر.</div>';
       student=(await api("/api/student/me")).student;
       setTimeout(()=>{if(student.level===old.level&&student.item===old.item)done();else render()},700)
     }else{
-      $("feed").innerHTML=`<div class="feed bad">❌ حاول مرة أخرى. المطلوب: <b>${esc(vowelHint)}</b>. للحصول على تقييم دقيق للحركة يجب تفعيل محرك تقييم النطق الصوتي.</div>`
+      $("feed").innerHTML=`<div class="feed bad">❌ لم أتعرف على الكلمة بشكل كافٍ. حاول مرة أخرى، وركز على <b>${esc(vowelHint)}</b>. يمكنك الضغط على «اسمع» لسماع النموذج.</div>`
     }
    }catch(err){$("feed").innerHTML='<div class="feed bad">تعذر حفظ المحاولة.</div>'}
  };
- rec.onerror=()=>{$("feed").innerHTML='<div class="feed bad">تعذر سماع القراءة. تحقق من الميكروفون.</div>'};
- rec.onend=()=>$("mic").classList.remove("on");rec.start()
+ rec.onerror=()=>{$("feed").innerHTML='<div class="feed bad">تعذر سماع القراءة. تأكد من الميكروفون وأن الموقع يعمل عبر HTTPS، وجرّب Google Chrome.</div>';$("mic").classList.remove("on")};
+ rec.onend=()=>$("mic").classList.remove("on");
+ try{rec.start()}catch(e){$("mic").classList.remove("on")}
 }
+
 function speak(){
   const text=($("target").querySelector("div")?.textContent||$("target").textContent).trim();
   if(!text)return;
